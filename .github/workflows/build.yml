@@ -1,0 +1,1320 @@
+name: Build Ilarion APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      PROJ: ${{ github.workspace }}/ilarion
+      PKG_DIR: ${{ github.workspace }}/ilarion/app/src/main/java/com/ilarion/game
+    steps:
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Prepare Android SDK
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" || true
+
+      - name: Create project folders
+        run: |
+          mkdir -p "$PKG_DIR"
+          mkdir -p "$PROJ/app/src/main/res/values"
+          mkdir -p "$PROJ/app/src/main/assets"
+          echo "Project folders ready"
+      - name: Write Gradle files
+        run: |
+          cd "$PROJ"
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = 'Ilarion'
+          include ':app'
+          EOF
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          EOF
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          android.useAndroidX=false
+          android.nonTransitiveRClass=true
+          EOF
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+          android {
+              namespace 'com.ilarion.game'
+              compileSdk 34
+              defaultConfig {
+                  applicationId 'com.ilarion.game'
+                  minSdk 21
+                  targetSdk 34
+                  versionCode 1
+                  versionName '1.0'
+              }
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          EOF
+          echo "Gradle files ready"
+
+      - name: Write Manifest and resources
+        run: |
+          cd "$PROJ/app/src/main"
+          cat > AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+              <uses-permission android:name="android.permission.VIBRATE" />
+              <application
+                  android:label="@string/app_name"
+                  android:usesCleartextTraffic="true"
+                  android:theme="@style/GameTheme">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:screenOrientation="sensorLandscape"
+                      android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
+                      android:windowSoftInputMode="stateHidden|adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+          cat > res/values/strings.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Ilarion</string>
+          </resources>
+          EOF
+          cat > res/values/styles.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="GameTheme" parent="android:Theme.Black.NoTitleBar.Fullscreen">
+                  <item name="android:windowBackground">@android:color/black</item>
+              </style>
+          </resources>
+          EOF
+          echo "Manifest and resources ready"
+      - name: Write engine files
+        run: |
+          cd "$PKG_DIR"
+          cat > Const.java <<'EOF'
+          package com.ilarion.game;
+
+          public final class Const {
+              private Const() {}
+
+              public static final int TILE = 16;
+              public static final int VIEW_W = 400;
+              public static final int VIEW_H = 180;
+              public static final int WORLD_COLS = 120;
+              public static final int WORLD_ROWS = 12;
+
+              public static final float GRAVITY = 900f;
+              public static final float MAX_FALL = 520f;
+              public static final float STEP = 1f / 60f;
+              public static final float PLAYER_SPEED = 95f;
+              public static final float JUMP_V = -360f;
+
+              public static final int TEAM_PLAYER = 0;
+              public static final int TEAM_ENEMY = 1;
+
+              public static final int PK_SLASH = 0;
+              public static final int PK_STORM = 1;
+              public static final int PK_THREAD = 2;
+              public static final int PK_BOLT = 3;
+              public static final int PK_ORB = 4;
+              public static final int PK_FIRE = 5;
+          }
+          EOF
+          cat > Util.java <<'EOF'
+          package com.ilarion.game;
+
+          import java.util.Random;
+
+          public final class Util {
+              private Util() {}
+
+              public static final Random RND = new Random();
+
+              public static float clamp(float v, float a, float b) {
+                  return v < a ? a : (v > b ? b : v);
+              }
+
+              public static int clampI(int v, int a, int b) {
+                  return v < a ? a : (v > b ? b : v);
+              }
+
+              public static float lerp(float a, float b, float t) {
+                  return a + (b - a) * t;
+              }
+
+              public static float approach(float v, float target, float delta) {
+                  if (v < target) return Math.min(v + delta, target);
+                  return Math.max(v - delta, target);
+              }
+
+              public static float dist(float x1, float y1, float x2, float y2) {
+                  float dx = x2 - x1;
+                  float dy = y2 - y1;
+                  return (float) Math.sqrt(dx * dx + dy * dy);
+              }
+
+              public static float rand(float a, float b) {
+                  return a + RND.nextFloat() * (b - a);
+              }
+          }
+          EOF
+          cat > Input.java <<'EOF'
+          package com.ilarion.game;
+
+          public class Input {
+              public volatile float moveX;
+              public volatile boolean downHeld;
+              public volatile boolean jumpHeld;
+              public volatile boolean attackHeld;
+              public volatile boolean skillHeld;
+              public volatile boolean jumpPressed;
+              public volatile boolean attackPressed;
+              public volatile boolean skillPressed;
+
+              public boolean takeJump() {
+                  if (jumpPressed) {
+                      jumpPressed = false;
+                      return true;
+                  }
+                  return false;
+              }
+
+              public boolean takeAttack() {
+                  if (attackPressed) {
+                      attackPressed = false;
+                      return true;
+                  }
+                  return false;
+              }
+
+              public boolean takeSkill() {
+                  if (skillPressed) {
+                      skillPressed = false;
+                      return true;
+                  }
+                  return false;
+              }
+
+              public void clear() {
+                  moveX = 0f;
+                  downHeld = false;
+                  jumpHeld = false;
+                  attackHeld = false;
+                  skillHeld = false;
+                  jumpPressed = false;
+                  attackPressed = false;
+                  skillPressed = false;
+              }
+          }
+          EOF
+          cat > Entity.java <<'EOF'
+          package com.ilarion.game;
+
+          public class Entity {
+              public float x, y, w, h;
+              public float vx, vy;
+              public boolean onGround;
+              public boolean hitWall;
+              public boolean alive = true;
+              public boolean gravity = true;
+              public int facing = 1;
+              public int team;
+              public float hp = 100f;
+              public float maxHp = 100f;
+              public float hurtTimer;
+              public float dropTimer;
+
+              public Entity(float x, float y, float w, float h) {
+                  this.x = x;
+                  this.y = y;
+                  this.w = w;
+                  this.h = h;
+              }
+
+              public float cx() {
+                  return x + w / 2f;
+              }
+
+              public float cy() {
+                  return y + h / 2f;
+              }
+
+              public boolean overlaps(Entity o) {
+                  return x < o.x + o.w && x + w > o.x && y < o.y + o.h && y + h > o.y;
+              }
+
+              public boolean overlapsRect(float rx, float ry, float rw, float rh) {
+                  return x < rx + rw && x + w > rx && y < ry + rh && y + h > ry;
+              }
+
+              public void tickTimers(float dt) {
+                  if (hurtTimer > 0f) hurtTimer -= dt;
+                  if (dropTimer > 0f) dropTimer -= dt;
+              }
+
+              public void applyGravity(float dt) {
+                  if (!gravity) return;
+                  vy += Const.GRAVITY * dt;
+                  if (vy > Const.MAX_FALL) vy = Const.MAX_FALL;
+              }
+
+              public void physics(World world, float dt) {
+                  applyGravity(dt);
+                  tickTimers(dt);
+                  world.move(this, dt);
+              }
+
+              public boolean damage(float amount, float kbx, float kby) {
+                  if (!alive || hurtTimer > 0f) return false;
+                  hp -= amount;
+                  hurtTimer = 0.25f;
+                  vx = kbx;
+                  vy = kby;
+                  if (hp <= 0f) {
+                      hp = 0f;
+                      alive = false;
+                  }
+                  return true;
+              }
+
+              public void heal(float amount) {
+                  if (!alive) return;
+                  hp = Math.min(maxHp, hp + amount);
+              }
+          }
+          EOF
+          cat > Projectile.java <<'EOF'
+          package com.ilarion.game;
+
+          import java.util.HashSet;
+
+          public class Projectile extends Entity {
+              public float dmg;
+              public float life;
+              public float knock = 120f;
+              public float grav;
+              public int kind;
+              public boolean pierce;
+              public int ownerId;
+              private final HashSet<Entity> hitSet = new HashSet<Entity>();
+
+              public Projectile(float x, float y, float w, float h, float vx, float vy,
+                                float dmg, float life, int team, int kind) {
+                  super(x, y, w, h);
+                  this.vx = vx;
+                  this.vy = vy;
+                  this.dmg = dmg;
+                  this.life = life;
+                  this.team = team;
+                  this.kind = kind;
+                  this.gravity = false;
+                  this.facing = vx >= 0f ? 1 : -1;
+              }
+
+              public boolean hasHit(Entity e) {
+                  return hitSet.contains(e);
+              }
+
+              public void markHit(Entity e) {
+                  hitSet.add(e);
+              }
+
+              public void update(World world, float dt) {
+                  vy += Const.GRAVITY * grav * dt;
+                  x += vx * dt;
+                  y += vy * dt;
+                  life -= dt;
+                  if (life <= 0f) alive = false;
+                  if (world.isSolidPx(cx(), cy())) alive = false;
+              }
+          }
+          EOF
+          cat > World.java <<'EOF'
+          package com.ilarion.game;
+
+          import java.util.Random;
+
+          public class World {
+              public static final int EMPTY = 0;
+              public static final int SOLID = 1;
+              public static final int ONEWAY = 2;
+
+              public final int cols;
+              public final int rows;
+              public final int groundRow;
+              public final long seed;
+              public final float pixelW;
+              public final float pixelH;
+              public final int[][] tiles;
+
+              public World(int cols, int rows, long seed) {
+                  this.cols = cols;
+                  this.rows = rows;
+                  this.seed = seed;
+                  this.groundRow = rows - 2;
+                  this.pixelW = cols * Const.TILE;
+                  this.pixelH = rows * Const.TILE;
+                  this.tiles = new int[rows][cols];
+                  generate();
+              }
+
+              private void generate() {
+                  Random rnd = new Random(seed);
+                  for (int c = 0; c < cols; c++) {
+                      for (int r = groundRow; r < rows; r++) {
+                          tiles[r][c] = SOLID;
+                      }
+                  }
+                  int c = 10;
+                  while (c < cols - 10) {
+                      int kind = rnd.nextInt(3);
+                      if (kind == 0) {
+                          int len = 3 + rnd.nextInt(4);
+                          int row = groundRow - 3 - rnd.nextInt(2);
+                          for (int i = 0; i < len; i++) {
+                              tiles[row][c + i] = ONEWAY;
+                          }
+                          c += len + 4 + rnd.nextInt(5);
+                      } else if (kind == 1) {
+                          int bw = 2 + rnd.nextInt(2);
+                          int bh = 1 + rnd.nextInt(2);
+                          for (int i = 0; i < bw; i++) {
+                              for (int j = 1; j <= bh; j++) {
+                                  tiles[groundRow - j][c + i] = SOLID;
+                              }
+                          }
+                          c += bw + 3 + rnd.nextInt(4);
+                      } else {
+                          for (int i = 0; i < 3; i++) {
+                              tiles[groundRow - 3][c + i] = ONEWAY;
+                              tiles[groundRow - 6][c + 3 + i] = ONEWAY;
+                          }
+                          c += 10 + rnd.nextInt(3);
+                      }
+                  }
+              }
+
+              public int get(int c, int r) {
+                  if (c < 0 || c >= cols) return SOLID;
+                  if (r < 0) return EMPTY;
+                  if (r >= rows) return SOLID;
+                  return tiles[r][c];
+              }
+
+              public boolean isSolidPx(float px, float py) {
+                  int c = (int) Math.floor(px / Const.TILE);
+                  int r = (int) Math.floor(py / Const.TILE);
+                  return get(c, r) == SOLID;
+              }
+
+              public float groundY() {
+                  return groundRow * Const.TILE;
+              }
+
+              public void move(Entity e, float dt) {
+                  e.hitWall = false;
+                  e.x += e.vx * dt;
+                  collideX(e);
+                  float prevBottom = e.y + e.h;
+                  e.y += e.vy * dt;
+                  e.onGround = false;
+                  collideY(e, prevBottom);
+              }
+
+              private void collideX(Entity e) {
+                  float t = Const.TILE;
+                  int c0 = (int) Math.floor(e.x / t);
+                  int c1 = (int) Math.floor((e.x + e.w - 0.01f) / t);
+                  int r0 = (int) Math.floor(e.y / t);
+                  int r1 = (int) Math.floor((e.y + e.h - 0.01f) / t);
+                  for (int r = r0; r <= r1; r++) {
+                      for (int c = c0; c <= c1; c++) {
+                          if (get(c, r) == SOLID) {
+                              if (e.vx > 0f) {
+                                  e.x = c * t - e.w;
+                              } else if (e.vx < 0f) {
+                                  e.x = (c + 1) * t;
+                              }
+                              e.vx = 0f;
+                              e.hitWall = true;
+                              return;
+                          }
+                      }
+                  }
+              }
+
+              private void collideY(Entity e, float prevBottom) {
+                  float t = Const.TILE;
+                  float vy0 = e.vy;
+                  int c0 = (int) Math.floor(e.x / t);
+                  int c1 = (int) Math.floor((e.x + e.w - 0.01f) / t);
+                  int r0 = (int) Math.floor(e.y / t);
+                  int r1 = (int) Math.floor((e.y + e.h - 0.01f) / t);
+                  for (int r = r0; r <= r1; r++) {
+                      for (int c = c0; c <= c1; c++) {
+                          int tile = get(c, r);
+                          if (tile == SOLID) {
+                              if (vy0 > 0f) {
+                                  e.y = r * t - e.h;
+                                  e.onGround = true;
+                                  e.vy = 0f;
+                                  return;
+                              } else if (vy0 < 0f) {
+                                  e.y = (r + 1) * t;
+                                  e.vy = 0f;
+                                  return;
+                              }
+                          } else if (tile == ONEWAY && vy0 >= 0f && e.dropTimer <= 0f
+                                  && prevBottom <= r * t + 0.5f && e.y + e.h > r * t) {
+                              e.y = r * t - e.h;
+                              e.onGround = true;
+                              e.vy = 0f;
+                              return;
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+          cat > Camera.java <<'EOF'
+          package com.ilarion.game;
+
+          public class Camera {
+              public float x;
+              public float y;
+              public int ox;
+              public int oy;
+              private float shake;
+
+              public void snap(float tx, float ty, World w) {
+                  x = tx - Const.VIEW_W / 2f;
+                  y = ty - Const.VIEW_H / 2f;
+                  clampToWorld(w);
+              }
+
+              public void follow(float tx, float ty, World w, float dt) {
+                  float targetX = tx - Const.VIEW_W / 2f;
+                  float targetY = ty - Const.VIEW_H / 2f;
+                  float k = 1f - (float) Math.pow(0.001, dt);
+                  x += (targetX - x) * k;
+                  y += (targetY - y) * k;
+                  clampToWorld(w);
+                  if (shake > 0.05f) {
+                      ox = (int) Util.rand(-shake, shake);
+                      oy = (int) Util.rand(-shake, shake);
+                      shake = Math.max(0f, shake - dt * 20f);
+                  } else {
+                      shake = 0f;
+                      ox = 0;
+                      oy = 0;
+                  }
+              }
+
+              private void clampToWorld(World w) {
+                  float maxX = Math.max(0f, w.pixelW - Const.VIEW_W);
+                  float maxY = Math.max(0f, w.pixelH - Const.VIEW_H);
+                  x = Util.clamp(x, 0f, maxX);
+                  y = Util.clamp(y, 0f, maxY);
+              }
+
+              public void addShake(float s) {
+                  shake = Math.max(shake, s);
+              }
+
+              public int drawX() {
+                  return Math.round(x) + ox;
+              }
+
+              public int drawY() {
+                  return Math.round(y) + oy;
+              }
+          }
+          EOF
+          cat > GameLoop.java <<'EOF'
+          package com.ilarion.game;
+
+          public class GameLoop implements Runnable {
+              public interface Callback {
+                  void update(float dt);
+                  void render();
+              }
+
+              private final Callback cb;
+              private volatile boolean running;
+              private Thread thread;
+
+              public GameLoop(Callback cb) {
+                  this.cb = cb;
+              }
+
+              public synchronized void start() {
+                  if (running) return;
+                  running = true;
+                  thread = new Thread(this, "GameLoop");
+                  thread.start();
+              }
+
+              public synchronized void stop() {
+                  running = false;
+                  if (thread != null) {
+                      try {
+                          thread.join(1000);
+                      } catch (InterruptedException ignored) {
+                      }
+                      thread = null;
+                  }
+              }
+
+              @Override
+              public void run() {
+                  long last = System.nanoTime();
+                  float acc = 0f;
+                  while (running) {
+                      long now = System.nanoTime();
+                      float frame = (now - last) / 1000000000f;
+                      last = now;
+                      if (frame > 0.25f) frame = 0.25f;
+                      acc += frame;
+                      int steps = 0;
+                      while (acc >= Const.STEP && steps < 5) {
+                          cb.update(Const.STEP);
+                          acc -= Const.STEP;
+                          steps++;
+                      }
+                      if (steps >= 5) acc = 0f;
+                      cb.render();
+                      long spent = (System.nanoTime() - now) / 1000000L;
+                      long wait = 16L - spent;
+                      if (wait < 1L) wait = 1L;
+                      try {
+                          Thread.sleep(wait);
+                      } catch (InterruptedException e) {
+                          break;
+                      }
+                  }
+              }
+          }
+          EOF
+          echo "Engine files ready"
+      - name: Write art core files
+        run: |
+          cd "$PKG_DIR"
+          cat > Pal.java <<'EOF'
+          package com.ilarion.game;
+
+          public final class Pal {
+              private Pal() {}
+
+              public static final int OUTLINE = 0xFF0B0A14;
+              public static final int BROWN = 0xFF6B4A2E;
+              public static final int WHITE = 0xFFFFFFFF;
+              public static final int GOLD = 0xFFE8B84A;
+
+              public static int mix(int a, int b, float t) {
+                  float u = 1f - t;
+                  int r = (int) (((a >> 16) & 255) * u + ((b >> 16) & 255) * t);
+                  int g = (int) (((a >> 8) & 255) * u + ((b >> 8) & 255) * t);
+                  int bl = (int) ((a & 255) * u + (b & 255) * t);
+                  return 0xFF000000 | (r << 16) | (g << 8) | bl;
+              }
+
+              public static int dark(int c) {
+                  return mix(c, 0xFF000000, 0.35f);
+              }
+
+              public static int light(int c) {
+                  return mix(c, 0xFFFFFFFF, 0.35f);
+              }
+
+              public static int alpha(int c, int a) {
+                  if (a < 0) a = 0;
+                  if (a > 255) a = 255;
+                  return (a << 24) | (c & 0x00FFFFFF);
+              }
+          }
+          EOF
+          cat > Px.java <<'EOF'
+          package com.ilarion.game;
+
+          import android.graphics.Bitmap;
+          import android.graphics.Canvas;
+          import android.graphics.Matrix;
+          import android.graphics.Paint;
+          import android.graphics.RectF;
+
+          public final class Px {
+              private Px() {}
+
+              private static final Paint FILL = new Paint();
+              private static final RectF OVAL = new RectF();
+
+              static {
+                  FILL.setAntiAlias(false);
+                  FILL.setFilterBitmap(false);
+                  FILL.setDither(false);
+              }
+
+              public static synchronized void rect(Canvas c, int x, int y, int w, int h, int color) {
+                  if (w <= 0 || h <= 0) return;
+                  FILL.setColor(color);
+                  c.drawRect(x, y, x + w, y + h, FILL);
+              }
+
+              public static void px(Canvas c, int x, int y, int color) {
+                  rect(c, x, y, 1, 1, color);
+              }
+
+              public static synchronized void ell(Canvas c, int cx, int cy, int rx, int ry, int color) {
+                  FILL.setColor(color);
+                  OVAL.set(cx - rx, cy - ry, cx + rx, cy + ry);
+                  c.drawOval(OVAL, FILL);
+              }
+
+              public static Bitmap make(int w, int h) {
+                  return Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+              }
+
+              public static Bitmap flip(Bitmap b) {
+                  Matrix m = new Matrix();
+                  m.preScale(-1f, 1f);
+                  return Bitmap.createBitmap(b, 0, 0, b.getWidth(), b.getHeight(), m, false);
+              }
+
+              public static Bitmap outline(Bitmap src, int color) {
+                  int w = src.getWidth();
+                  int h = src.getHeight();
+                  int nw = w + 2;
+                  int nh = h + 2;
+                  int[] in = new int[w * h];
+                  src.getPixels(in, 0, w, 0, 0, w, h);
+                  int[] body = new int[nw * nh];
+                  for (int y = 0; y < h; y++) {
+                      for (int x = 0; x < w; x++) {
+                          int p = in[y * w + x];
+                          if ((p >>> 24) > 40) body[(y + 1) * nw + (x + 1)] = p;
+                      }
+                  }
+                  int[] out = body.clone();
+                  for (int y = 0; y < nh; y++) {
+                      for (int x = 0; x < nw; x++) {
+                          int i = y * nw + x;
+                          if (body[i] != 0) continue;
+                          boolean edge = false;
+                          if (x > 0 && body[i - 1] != 0) edge = true;
+                          if (x < nw - 1 && body[i + 1] != 0) edge = true;
+                          if (y > 0 && body[i - nw] != 0) edge = true;
+                          if (y < nh - 1 && body[i + nw] != 0) edge = true;
+                          if (edge) out[i] = color;
+                      }
+                  }
+                  Bitmap res = Bitmap.createBitmap(nw, nh, Bitmap.Config.ARGB_8888);
+                  res.setPixels(out, 0, nw, 0, 0, nw, nh);
+                  return res;
+              }
+          }
+          EOF
+          cat > Anim.java <<'EOF'
+          package com.ilarion.game;
+
+          public final class Anim {
+              private Anim() {}
+
+              public static final int IDLE0 = 0;
+              public static final int IDLE1 = 1;
+              public static final int RUN0 = 2;
+              public static final int RUN1 = 3;
+              public static final int RUN2 = 4;
+              public static final int RUN3 = 5;
+              public static final int JUMP = 6;
+              public static final int FALL = 7;
+              public static final int ATK0 = 8;
+              public static final int ATK1 = 9;
+              public static final int HURT = 10;
+              public static final int HERO_COUNT = 11;
+
+              public static final int M_IDLE0 = 0;
+              public static final int M_IDLE1 = 1;
+              public static final int M_MOVE0 = 2;
+              public static final int M_MOVE1 = 3;
+              public static final int M_ATK = 4;
+              public static final int M_HURT = 5;
+              public static final int MON_COUNT = 6;
+
+              public static int runFrame(float t) {
+                  return RUN0 + (((int) (t * 12f)) & 3);
+              }
+
+              public static int idleFrame(float t) {
+                  return ((int) (t * 2f)) & 1;
+              }
+          }
+          EOF
+          cat > Mon.java <<'EOF'
+          package com.ilarion.game;
+
+          public final class Mon {
+              private Mon() {}
+
+              public static final int CRAWLER = 0;
+              public static final int BAT = 1;
+              public static final int BRUTE = 2;
+              public static final int WISP = 3;
+              public static final int TREANT = 4;
+              public static final int SERAPHON = 5;
+              public static final int MORGANETH = 6;
+              public static final int EVRA = 7;
+              public static final int DRAKON = 8;
+              public static final int COUNT = 9;
+          }
+          EOF
+          cat > Frames.java <<'EOF'
+          package com.ilarion.game;
+
+          import android.graphics.Bitmap;
+
+          public final class Frames {
+              public final Bitmap[] r;
+              public final Bitmap[] l;
+              public final int w;
+              public final int h;
+
+              public Frames(Bitmap[] right) {
+                  r = right;
+                  l = new Bitmap[right.length];
+                  for (int i = 0; i < right.length; i++) {
+                      l[i] = Px.flip(right[i]);
+                  }
+                  w = right[0].getWidth();
+                  h = right[0].getHeight();
+              }
+
+              public Bitmap get(int i, int facing) {
+                  if (i < 0 || i >= r.length) i = 0;
+                  return facing >= 0 ? r[i] : l[i];
+              }
+          }
+          EOF
+          cat > Glow.java <<'EOF'
+          package com.ilarion.game;
+
+          import android.graphics.Bitmap;
+          import android.graphics.Canvas;
+          import android.graphics.Paint;
+          import android.graphics.RadialGradient;
+          import android.graphics.Shader;
+          import java.util.HashMap;
+
+          public final class Glow {
+              private Glow() {}
+
+              private static final HashMap<Long, Bitmap> CACHE = new HashMap<Long, Bitmap>();
+
+              public static synchronized Bitmap get(int radius, int color) {
+                  if (radius < 1) radius = 1;
+                  if (radius > 64) radius = 64;
+                  long key = (((long) radius) << 32) | (color & 0xFFFFFFFFL);
+                  Bitmap b = CACHE.get(key);
+                  if (b != null) return b;
+                  int d = radius * 2;
+                  b = Bitmap.createBitmap(d, d, Bitmap.Config.ARGB_8888);
+                  Canvas c = new Canvas(b);
+                  Paint p = new Paint();
+                  p.setAntiAlias(true);
+                  int c0 = Pal.alpha(color, 210);
+                  int c1 = Pal.alpha(color, 70);
+                  int c2 = Pal.alpha(color, 0);
+                  p.setShader(new RadialGradient(radius, radius, radius,
+                          new int[]{c0, c1, c2}, new float[]{0f, 0.45f, 1f}, Shader.TileMode.CLAMP));
+                  c.drawCircle(radius, radius, radius, p);
+                  CACHE.put(key, b);
+                  return b;
+              }
+          }
+          EOF
+          cat > PixelFont.java <<'EOF'
+          package com.ilarion.game;
+
+          import android.graphics.Canvas;
+
+          public final class PixelFont {
+              private PixelFont() {}
+
+              private static String glyph(char ch) {
+                  switch (ch) {
+                      case '0': return "111101101101111";
+                      case '1': return "010110010010111";
+                      case '2': return "111001111100111";
+                      case '3': return "111001111001111";
+                      case '4': return "101101111001001";
+                      case '5': return "111100111001111";
+                      case '6': return "111100111101111";
+                      case '7': return "111001001001001";
+                      case '8': return "111101111101111";
+                      case '9': return "111101111001111";
+                      case '/': return "001001010100100";
+                      case ':': return "000010000010000";
+                      case '-': return "000000111000000";
+                      case '+': return "000010111010000";
+                      case 'P': return "111101111100100";
+                      case 'x': return "000101010101000";
+                      default: return null;
+                  }
+              }
+
+              public static int width(String s, int scale) {
+                  if (s.length() == 0) return 0;
+                  return s.length() * 4 * scale - scale;
+              }
+
+              public static void draw(Canvas c, String s, int x, int y, int color, int scale) {
+                  for (int i = 0; i < s.length(); i++) {
+                      String g = glyph(s.charAt(i));
+                      if (g == null) continue;
+                      for (int k = 0; k < 15; k++) {
+                          if (g.charAt(k) == '1') {
+                              int gx = k % 3;
+                              int gy = k / 3;
+                              Px.rect(c, x + i * 4 * scale + gx * scale, y + gy * scale, scale, scale, color);
+                          }
+                      }
+                  }
+              }
+
+              public static void drawShadow(Canvas c, String s, int x, int y, int color, int scale) {
+                  draw(c, s, x + 1, y + 1, 0xFF000000, scale);
+                  draw(c, s, x, y, color, scale);
+              }
+
+              public static void drawOutlined(Canvas c, String s, int x, int y, int color, int scale) {
+                  draw(c, s, x - 1, y, 0xFF000000, scale);
+                  draw(c, s, x + 1, y, 0xFF000000, scale);
+                  draw(c, s, x, y - 1, 0xFF000000, scale);
+                  draw(c, s, x, y + 1, 0xFF000000, scale);
+                  draw(c, s, x, y, color, scale);
+              }
+
+              public static String fmt(int v) {
+                  String s = Integer.toString(Math.abs(v));
+                  StringBuilder sb = new StringBuilder();
+                  int n = s.length();
+                  for (int i = 0; i < n; i++) {
+                      if (i > 0 && (n - i) % 3 == 0) sb.append(' ');
+                      sb.append(s.charAt(i));
+                  }
+                  return (v < 0 ? "-" : "") + sb.toString();
+              }
+
+              public static String pad(int v, int digits) {
+                  String s = Integer.toString(Math.max(0, v));
+                  while (s.length() < digits) s = "0" + s;
+                  return s;
+              }
+          }
+          EOF
+          cat > HeroLook.java <<'EOF'
+          package com.ilarion.game;
+
+          public final class HeroLook {
+              public static final int LEVI = 0;
+              public static final int AFIAN = 1;
+              public static final int MIRA = 2;
+              public static final int REN = 3;
+              public static final int ELINA = 4;
+              public static final int DARIUS = 5;
+              public static final int ALDRIC = 6;
+
+              public String name;
+              public int hair, skin, cloth, cloth2, trim, pants, boots, eye, cape;
+              public int weapon, band, hoodCol, maskCol, beard, glassCol, bg, wtype;
+              public boolean longHair, hood, mask, hasBeard, glasses, headband, big;
+
+              public static final HeroLook[] ALL = {levi(), afian(), mira(), ren(), elina(), darius(), aldric()};
+
+              private static HeroLook base() {
+                  HeroLook k = new HeroLook();
+                  k.skin = 0xFFF0C09A;
+                  k.eye = 0xFF202030;
+                  k.pants = 0xFF2A2A38;
+                  k.boots = 0xFF16161E;
+                  k.trim = 0xFFC9A44A;
+                  return k;
+              }
+
+              private static HeroLook levi() {
+                  HeroLook k = base();
+                  k.name = "Levi";
+                  k.hair = 0xFF14121A;
+                  k.skin = 0xFFEBC09A;
+                  k.cloth = 0xFF1C1C28;
+                  k.cloth2 = 0xFF262634;
+                  k.trim = 0xFF8A1F2B;
+                  k.pants = 0xFF121218;
+                  k.boots = 0xFF0B0A12;
+                  k.eye = 0xFF8FA0D8;
+                  k.cape = 0xFF16161F;
+                  k.weapon = 0xFF9BA2C8;
+                  k.wtype = 0;
+                  k.bg = 0xFF1C8C94;
+                  return k;
+              }
+
+              private static HeroLook afian() {
+                  HeroLook k = base();
+                  k.name = "Afian";
+                  k.hair = 0xFFE8761E;
+                  k.skin = 0xFFF0B98F;
+                  k.cloth = 0xFFB8412C;
+                  k.cloth2 = 0xFF8F2F20;
+                  k.trim = 0xFFFFD36B;
+                  k.pants = 0xFF3B2F4A;
+                  k.boots = 0xFF2A2030;
+                  k.eye = 0xFF2B6E3B;
+                  k.weapon = 0xFFFFC94A;
+                  k.wtype = 1;
+                  k.longHair = true;
+                  k.headband = true;
+                  k.band = 0xFFE23A3A;
+                  k.bg = 0xFFC62F3A;
+                  return k;
+              }
+
+              private static HeroLook mira() {
+                  HeroLook k = base();
+                  k.name = "Mira";
+                  k.hair = 0xFFF08CB0;
+                  k.skin = 0xFFF4CFAE;
+                  k.cloth = 0xFFF4E6D2;
+                  k.cloth2 = 0xFFC9B79B;
+                  k.trim = 0xFFE0607E;
+                  k.pants = 0xFF5A4A66;
+                  k.boots = 0xFF3A2D44;
+                  k.eye = 0xFF7A4BC8;
+                  k.cape = 0xFFE88AA8;
+                  k.weapon = 0xFFFFB5D0;
+                  k.wtype = 2;
+                  k.longHair = true;
+                  k.bg = 0xFF8A4BC8;
+                  return k;
+              }
+
+              private static HeroLook ren() {
+                  HeroLook k = base();
+                  k.name = "Ren";
+                  k.hair = 0xFF2A4A2E;
+                  k.skin = 0xFFD9A87E;
+                  k.cloth = 0xFF2F7A3A;
+                  k.cloth2 = 0xFF22592B;
+                  k.trim = 0xFFC9A44A;
+                  k.pants = 0xFF2A3A2C;
+                  k.boots = 0xFF1B241C;
+                  k.eye = 0xFFF3F3A0;
+                  k.weapon = 0xFFD6E0D8;
+                  k.wtype = 3;
+                  k.hood = true;
+                  k.hoodCol = 0xFF3E9B47;
+                  k.mask = true;
+                  k.maskCol = 0xFF1E3B27;
+                  k.bg = 0xFF5CB02F;
+                  return k;
+              }
+
+              private static HeroLook elina() {
+                  HeroLook k = base();
+                  k.name = "Elina";
+                  k.hair = 0xFFEDEDFA;
+                  k.skin = 0xFFF2D0B4;
+                  k.cloth = 0xFF5A6FD0;
+                  k.cloth2 = 0xFF41539E;
+                  k.trim = 0xFFFFE08A;
+                  k.pants = 0xFF2E3866;
+                  k.boots = 0xFF212849;
+                  k.eye = 0xFF3AB8F0;
+                  k.cape = 0xFF8FA2F0;
+                  k.weapon = 0xFF9EE6FF;
+                  k.wtype = 4;
+                  k.longHair = true;
+                  k.bg = 0xFF3C63C8;
+                  return k;
+              }
+
+              private static HeroLook darius() {
+                  HeroLook k = base();
+                  k.name = "Darius";
+                  k.hair = 0xFF4A3B30;
+                  k.skin = 0xFFD6A27A;
+                  k.cloth = 0xFF7A7F8C;
+                  k.cloth2 = 0xFF5A5F6C;
+                  k.trim = 0xFFB88A2E;
+                  k.pants = 0xFF3C3F4A;
+                  k.boots = 0xFF24262E;
+                  k.eye = 0xFF2A2A2A;
+                  k.cape = 0xFF8A2A2A;
+                  k.weapon = 0xFFB9C2D0;
+                  k.wtype = 5;
+                  k.big = true;
+                  k.hasBeard = true;
+                  k.beard = 0xFF6A5A4E;
+                  k.bg = 0xFF9C6B2D;
+                  return k;
+              }
+
+              private static HeroLook aldric() {
+                  HeroLook k = base();
+                  k.name = "Aldric";
+                  k.hair = 0xFFE8E8EE;
+                  k.skin = 0xFFE0B08A;
+                  k.cloth = 0xFF2F4F6A;
+                  k.cloth2 = 0xFF223A4E;
+                  k.trim = 0xFFC9B26A;
+                  k.pants = 0xFF2A3440;
+                  k.boots = 0xFF1C242C;
+                  k.eye = 0xFF222222;
+                  k.cape = 0xFF3D6B8F;
+                  k.weapon = 0xFF8FE0D0;
+                  k.wtype = 4;
+                  k.hasBeard = true;
+                  k.beard = 0xFFF2F2F2;
+                  k.glasses = true;
+                  k.glassCol = 0xFFE0324A;
+                  k.bg = 0xFF1C8C94;
+                  return k;
+              }
+          }
+          EOF
+          cat > HeroArt.java <<'EOF'
+          package com.ilarion.game;
+
+          import android.graphics.Bitmap;
+          import android.graphics.Canvas;
+
+          public final class HeroArt {
+              private HeroArt() {}
+
+              private static final int OX = 10;
+              private static final int OY = 3;
+              private static final int CW = 44;
+              private static final int CH = 33;
+
+              public static Frames build(HeroLook k) {
+                  Bitmap[] f = new Bitmap[Anim.HERO_COUNT];
+                  for (int i = 0; i < f.length; i++) {
+                      Bitmap b = Px.make(CW, CH);
+                      Canvas c = new Canvas(b);
+                      draw(c, k, i);
+                      f[i] = Px.outline(b, Pal.OUTLINE);
+                  }
+                  return new Frames(f);
+              }
+
+              private static void r(Canvas c, int x, int y, int w, int h, int col) {
+                  Px.rect(c, x + OX, y + OY, w, h, col);
+              }
+
+              private static void leg(Canvas c, int x, int bob, int lift, int pants, int boots) {
+                  int top = 21 + bob;
+                  int bootTop = 28 - lift;
+                  if (bootTop <= top) bootTop = top + 1;
+                  r(c, x, top, 3, bootTop - top, pants);
+                  r(c, x, bootTop, 4, 2, boots);
+              }
+
+              private static void weapon(Canvas c, HeroLook k, int hx, int hy, boolean up) {
+                  int col = k.weapon;
+                  int lt = Pal.light(col);
+                  int dk = Pal.dark(col);
+                  switch (k.wtype) {
+                      case 1:
+                          r(c, hx, hy - 3, 4, 5, col);
+                          r(c, hx + 1, hy - 2, 2, 3, 0xFFFFF2B0);
+                          r(c, hx + 1, hy - 4, 2, 1, dk);
+                          break;
+                      case 2:
+                          if (up) {
+                              r(c, hx, hy - 9, 1, 9, lt);
+                          } else {
+                              r(c, hx, hy, 9, 1, lt);
+                          }
+                          break;
+                      case 4:
+                          if (up) {
+                              r(c, hx, hy - 12, 2, 13, Pal.BROWN);
+                              r(c, hx - 1, hy - 14, 4, 4, col);
+                          } else {
+                              r(c, hx, hy, 10, 2, Pal.BROWN);
+                              r(c, hx + 8, hy - 1, 4, 4, col);
+                          }
+                          break;
+                      default:
+                          int len = (k.wtype == 5) ? 12 : (k.wtype == 3 ? 6 : 10);
+                          int th = (k.wtype == 5) ? 3 : 2;
+                          if (up) {
+                              r(c, hx, hy - len, th, len, col);
+                              r(c, hx, hy - len, 1, len, lt);
+                              r(c, hx - 1, hy, th + 2, 1, dk);
+                          } else {
+                              r(c, hx, hy, len, th, col);
+                              r(c, hx, hy, len, 1, lt);
+                              r(c, hx - 1, hy - 1, 1, th + 2, dk);
+                          }
+                          break;
+                  }
+              }
+
+              private static void draw(Canvas c, HeroLook k, int f) {
+                  int bob = 0;
+                  if (f == Anim.IDLE1 || f == Anim.HURT) bob = 1;
+                  if (f >= Anim.RUN0 && f <= Anim.RUN3 && ((f - Anim.RUN0) & 1) == 1) bob = 1;
+                  int wide = k.big ? 1 : 0;
+                  int ax = 0, bx = 0, al = 0, bl = 0;
+                  switch (f) {
+                      case Anim.RUN0: ax = 2; bx = -2; break;
+                      case Anim.RUN1: bl = 2; break;
+                      case Anim.RUN2: ax = -2; bx = 2; break;
+                      case Anim.RUN3: al = 2; break;
+                      case Anim.JUMP: ax = 2; bx = -1; al = 2; bl = 3; break;
+                      case Anim.FALL: ax = 1; bx = -1; break;
+                      case Anim.HURT: ax = -1; bx = 1; break;
+                      default: break;
+                  }
+                  boolean atk = (f == Anim.ATK0 || f == Anim.ATK1);
+
+                  if (k.cape != 0) {
+                      int s = 0;
+                      if (f >= Anim.RUN0 && f <= Anim.RUN3) s = -1 - ((f - Anim.RUN0) & 1);
+                      else if (f == Anim.JUMP) s = -2;
+                      else if (f == Anim.FALL) s = -1;
+                      else if (f == Anim.ATK1) s = -2;
+                      r(c, 6 + s - wide, 13 + bob, 5, 11, k.cape);
+                      r(c, 4 + s - wide, 19 + bob, 4, 6, Pal.dark(k.cape));
+                  }
+                  if (k.longHair && !k.hood) {
+                      r(c, 5, 6 + bob, 4, 10, k.hair);
+                  }
+
+                  r(c, 8 - wide, 14 + bob, 2, 6, Pal.dark(k.cloth2));
+                  r(c, 8 - wide, 20 + bob, 2, 2, Pal.dark(k.skin));
+
+                  leg(c, 9 + bx, bob, bl, Pal.dark(k.pants), k.boots);
+                  leg(c, 12 + ax, bob, al, k.pants, k.boots);
+
+                  int tx = 9 - wide;
+                  int tw = 6 + 2 * wide;
+                  r(c, tx, 13 + bob, tw, 8, k.cloth);
+                  r(c, tx, 13 + bob, 1, 8, Pal.dark(k.cloth));
+                  r(c, tx, 13 + bob, tw, 1, k.trim);
+                  r(c, tx, 19 + bob, tw, 1, k.trim);
+                  r(c, 11, 15 + bob, 2, 2, Pal.light(k.cloth));
+
+                  r(c, 11, 12 + bob, 3, 1, Pal.dark(k.skin));
+                  r(c, 8, 5 + bob, 8, 7, k.skin);
+                  r(c, 8, 5 + bob, 1, 7, Pal.dark(k.skin));
+                  if (f == Anim.HURT) {
+                      r(c, 11, 9 + bob, 2, 1, k.eye);
+                      r(c, 14, 9 + bob, 2, 1, k.eye);
+                  } else {
+                      r(c, 11, 8 + bob, 1, 2, k.eye);
+                      r(c, 14, 8 + bob, 1, 2, k.eye);
+                  }
+                  if (k.glasses) {
+                      r(c, 10, 7 + bob, 3, 3, k.glassCol);
+                      r(c, 11, 8 + bob, 1, 1, 0xFFFFE6E6);
+                      r(c, 13, 7 + bob, 3, 3, k.glassCol);
+                      r(c, 14, 8 + bob, 1, 1, 0xFFFFE6E6);
+                      r(c, 12, 8 + bob, 1, 1, k.glassCol);
+                  }
+                  if (k.hasBeard) {
+                      r(c, 8, 9 + bob, 8, 3, k.beard);
+                      r(c, 9, 12 + bob, 5, 2, k.beard);
+                  }
+                  if (k.mask) {
+                      r(c, 8, 9 + bob, 8, 3, k.maskCol);
+                  }
+                  if (k.hood) {
+                      r(c, 7, 3 + bob, 10, 3, k.hoodCol);
+                      r(c, 6, 5 + bob, 3, 8, k.hoodCol);
+                      r(c, 15, 5 + bob, 1, 2, k.hoodCol);
+                      r(c, 4, 7 + bob, 3, 3, Pal.dark(k.hoodCol));
+                  } else {
+                      r(c, 7, 3 + bob, 10, 3, k.hair);
+                      r(c, 7, 5 + bob, 2, 5, k.hair);
+                      r(c, 12, 5 + bob, 4, 1, k.hair);
+                      r(c, 9, 3 + bob, 4, 1, Pal.light(k.hair));
+                  }
+                  if (k.headband) {
+                      r(c, 8, 5 + bob, 8, 1, k.band);
+                      r(c, 4, 6 + bob, 4, 1, k.band);
+                      r(c, 3, 7 + bob, 3, 1, k.band);
+                  }
+
+                  int fx = 14 + wide;
+                  if (f == Anim.ATK0) {
+                      r(c, fx, 14, 3, 2, k.cloth2);
+                      r(c, fx + 2, 11, 2, 5, k.cloth2);
+                      r(c, fx + 2, 10, 2, 2, k.skin);
+                      weapon(c, k, fx + 2, 10, true);
+                  } else if (f == Anim.ATK1) {
+                      r(c, fx, 15, 6, 2, k.cloth2);
+                      r(c, fx + 5, 15, 2, 2, k.skin);
+                      weapon(c, k, fx + 6, 15, false);
+                  } else {
+                      int ay = 14 + bob;
+                      if (f == Anim.JUMP) ay = 11;
+                      if (f == Anim.HURT) ay = 12;
+                      r(c, fx, ay, 2, 6, k.cloth2);
+                      r(c, fx, ay + 6, 2, 2, k.skin);
+                      if (!atk) {
+                          r(c, fx + 1, 19 + bob, 2, 3, k.weapon);
+                      }
+                  }
+              }
+          }
+          EOF
+          cat > MonsterArt.java <<'EOF'
+          p
